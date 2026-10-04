@@ -1,0 +1,24 @@
+services:
+  tests:
+    build: .
+    restart: 'no'
+    command: [python, -m, pytest, -v, /srv/tests, --junitxml=/srv/test-results/junit.xml]
+    environment:
+      AUTH_DATABASE_URL: postgresql://auth:${SERVICE_DB_PASSWORD}@db/auth
+      CIRCULATION_DATABASE_URL: postgresql://circulation:${SERVICE_DB_PASSWORD}@db/circulation
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN}
+      RUN_AI_TESTS: ${RUN_AI_TESTS:-false}
+    volumes:
+      - ./tests:/srv/tests:ro
+      - ./test-results:/srv/test-results
+    user: '0:0'
+    networks: [backend]
+    depends_on:
+      auth:
+        condition: service_healthy
+      catalog:
+        condition: service_healthy
+      circulation:
+        condition: service_healthy
+      recommendations:
+        condition: service_healthy

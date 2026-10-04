@@ -1,0 +1,78 @@
+name: full-project-tests
+on: [push, pull_request, workflow_dispatch]
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run build
+      - run: npx playwright install --with-deps chromium
+      - run: npm test
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: frontend-browser-results
+          path: |
+            frontend/playwright-report/
+            frontend/test-results/
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Generate isolated secrets
+        run: python scripts/configure.py
+      - name: Validate sources and compose
+        run: |
+          python -m compileall -q app scripts tests
+          docker compose -p library-test -f compose.yaml -f compose.test.yaml config --quiet
+      - name: Start test services
+        run: docker compose -p library-test -f compose.yaml -f compose.test.yaml up -d --build gateway notifications mailpit
+      - name: Test including real neural model
+        run: docker compose -p library-test -f compose.yaml -f compose.test.yaml run --rm -e RUN_AI_TESTS=true tests
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Prepare real browser test
+        run: |
+          docker compose -p library-test exec -T -e ALLOW_CI_ADMIN=true auth python scripts/ci_admin.py
+          cd frontend
+          npm ci
+          npx playwright install --with-deps chromium
+      - name: Test browser against actual stack
+        working-directory: frontend
+        env:
+          E2E_ADMIN_EMAIL: ci-admin@example.com
+          E2E_ADMIN_PASSWORD: Ci-only-password-123!
+        run: npm run test:live
+      - name: Logs on failure
+        if: failure()
+        run: docker compose -p library-test -f compose.yaml -f compose.test.yaml logs --no-color --tail=150
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: full-stack-browser-results
+          path: |
+            frontend/playwright-report/
+            frontend/test-results/
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results
+          path: test-results/
+      - name: Stop isolated services
+        if: always()
+        run: docker compose -p library-test -f compose.yaml -f compose.test.yaml down

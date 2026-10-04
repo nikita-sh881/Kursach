@@ -1,0 +1,1 @@
+CREATE TABLE messages(id bigserial PRIMARY KEY, event_key text NOT NULL UNIQUE, email text NOT NULL, subject text NOT NULL, body text NOT NULL, attempts integer NOT NULL DEFAULT 0, next_attempt timestamptz NOT NULL DEFAULT now(), sent_at timestamptz, last_error text);

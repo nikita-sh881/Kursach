@@ -1,0 +1,123 @@
+name: library
+x-base: &base
+  build: .
+  restart: unless-stopped
+  depends_on:
+    migrate:
+      condition: service_completed_successfully
+  networks: [backend]
+  healthcheck:
+    test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+    interval: 15s
+    timeout: 5s
+    retries: 5
+x-client: &client
+  AUTH_URL: http://auth:8000
+  CATALOG_URL: http://catalog:8000
+  CIRCULATION_URL: http://circulation:8000
+  INTERNAL_TOKEN: ${INTERNAL_TOKEN:?Set INTERNAL_TOKEN in .env}
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_DB: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      SERVICE_DB_PASSWORD: ${SERVICE_DB_PASSWORD:?Set SERVICE_DB_PASSWORD in .env}
+    volumes:
+      - postgres:/var/lib/postgresql/data
+      - ./scripts/init-db.sh:/docker-entrypoint-initdb.d/01-init.sh:ro
+    networks: [backend]
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U postgres]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+  migrate:
+    build: .
+    command: [python, scripts/migrate.py]
+    restart: 'no'
+    environment:
+      AUTH_DATABASE_URL: postgresql://auth:${SERVICE_DB_PASSWORD}@db/auth
+      CATALOG_DATABASE_URL: postgresql://catalog:${SERVICE_DB_PASSWORD}@db/catalog
+      CIRCULATION_DATABASE_URL: postgresql://circulation:${SERVICE_DB_PASSWORD}@db/circulation
+      NOTIFICATIONS_DATABASE_URL: postgresql://notifications:${SERVICE_DB_PASSWORD}@db/notifications
+      RECOMMENDATIONS_DATABASE_URL: postgresql://recommendations:${SERVICE_DB_PASSWORD}@db/recommendations
+    depends_on:
+      db:
+        condition: service_healthy
+    networks: [backend]
+  auth:
+    <<: *base
+    environment:
+      DATABASE_URL: postgresql://auth:${SERVICE_DB_PASSWORD}@db/auth
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
+  catalog:
+    <<: *base
+    command: [uvicorn, app.catalog:app, --host, 0.0.0.0, --port, '8000']
+    environment:
+      <<: *client
+      DATABASE_URL: postgresql://catalog:${SERVICE_DB_PASSWORD}@db/catalog
+  circulation:
+    <<: *base
+    command: [uvicorn, app.circulation:app, --host, 0.0.0.0, --port, '8000']
+    environment:
+      <<: *client
+      DATABASE_URL: postgresql://circulation:${SERVICE_DB_PASSWORD}@db/circulation
+  notifications:
+    <<: *base
+    command: [python, -m, app.notifications]
+    healthcheck:
+      disable: true
+    environment:
+      <<: *client
+      DATABASE_URL: postgresql://notifications:${SERVICE_DB_PASSWORD}@db/notifications
+      SMTP_HOST: ${SMTP_HOST:-mailpit}
+      SMTP_PORT: ${SMTP_PORT:-1025}
+      SMTP_FROM: ${SMTP_FROM:-library@example.test}
+      SMTP_TLS: ${SMTP_TLS:-false}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      circulation:
+        condition: service_healthy
+  recommendations:
+    <<: *base
+    build:
+      context: .
+      dockerfile: Dockerfile.ai
+    environment:
+      <<: *client
+      DATABASE_URL: postgresql://recommendations:${SERVICE_DB_PASSWORD}@db/recommendations
+      HF_HOME: /home/library/models
+    volumes:
+      - models:/home/library/models
+  gateway:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    restart: unless-stopped
+    ports: ['127.0.0.1:8080:80']
+    networks: [backend]
+    depends_on:
+      auth:
+        condition: service_healthy
+      catalog:
+        condition: service_healthy
+      circulation:
+        condition: service_healthy
+      recommendations:
+        condition: service_healthy
+  mailpit:
+    image: axllent/mailpit:v1.24
+    restart: unless-stopped
+    ports: ['127.0.0.1:8025:8025']
+    networks: [backend]
+volumes:
+  postgres:
+  models:
+networks:
+  backend:
